@@ -1,5 +1,6 @@
 /*
     ChibiOS - Copyright (C) 2006..2018 Giovanni Di Sirio
+              Copyright (C) 2020 Matthew Trescott <matthewtrescott@gmail.com>
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -54,14 +55,75 @@
  * @details If set to @p TRUE the support for CAN1 is included.
  * @note    The default is @p FALSE.
  */
-#if !defined(PLATFORM_CAN_USE_CAN1) || defined(__DOXYGEN__)
-#define PLATFORM_CAN_USE_CAN1                  FALSE
+#if !defined(TIVA_CAN_USE_CAN1) || defined(__DOXYGEN__)
+#define TIVA_CAN_USE_CAN1                  FALSE
+#endif
+
+/**
+ * @brief   CAN2 driver enable switch.
+ * @details If set to @p TRUE the support for CAN2 is included.
+ * @note    The default is @p FALSE.
+ */
+#if !defined(TIVA_CAN_USE_CAN1) || defined(__DOXYGEN__)
+#define TIVA_CAN_USE_CAN2                  FALSE
+#endif
+/** @} */
+
+/**
+ * @brief   CAN1 interrupt priority level setting.
+ * 
+ * Acceptable values are in the range [0..7] where 0 is highest priority.
+ * @note    The default value is 7, but this is arbitrary.
+ */
+#if !defined(TIVA_CAN_CAN1_IRQ_PRIORITY) || defined(__DOXYGEN__)
+#define TIVA_CAN_CAN1_IRQ_PRIORITY         7
+#endif
+/** @} */
+
+/**
+ * @brief   CAN2 interrupt priority level setting.
+ * 
+ * Acceptable values are in the range [0..7] where 0 is highest priority.
+ * @note    The default value is 7, but this is arbitrary.
+ */
+#if !defined(TIVA_CAN_CAN2_IRQ_PRIORITY) || defined(__DOXYGEN__)
+#define TIVA_CAN_CAN2_IRQ_PRIORITY         7
 #endif
 /** @} */
 
 /*===========================================================================*/
 /* Derived constants and error checks.                                       */
 /*===========================================================================*/
+
+#if !TIVA_CAN_USE_CAN1 && !TIVA_CAN_USE_CAN2
+#error "CAN driver activated but no CAN peripheral assigned"
+#endif
+
+#if !defined(TIVA_HAS_CAN0)
+#error "TIVA_HAS_CAN0 not defined in registry"
+#endif
+
+#if !defined(TIVA_HAS_CAN1)
+#error "TIVA_HAS_CAN1 not defined in registry"
+#endif
+
+#if TIVA_CAN_USE_CAN1 && !TIVA_HAS_CAN0
+#error "CAN1 not present in the selected device"
+#endif
+
+#if TIVA_CAN_USE_CAN2 && !TIVA_HAS_CAN1
+#error "CAN2 not present in the selected device"
+#endif
+
+#if TIVA_CAN_USE_CAN1 && \
+    !OSAL_IRQ_IS_VALID_PRIORITY(TIVA_CAN_CAN1_IRQ_PRIORITY)
+#error "Invalid IRQ priority assigned to CAN1"
+#endif
+    
+#if TIVA_CAN_USE_CAN2 && \
+    !OSAL_IRQ_IS_VALID_PRIORITY(TIVA_CAN_CAN2_IRQ_PRIORITY)
+#error "Invalid IRQ priority assigned to CAN2"
+#endif
 
 /*===========================================================================*/
 /* Driver data structures and types.                                         */
@@ -77,7 +139,7 @@ typedef struct CANDriver CANDriver;
  */
 typedef uint32_t canmbx_t;
 
-#if defined(CAN_ENFORCE_USE_CALLBACKS) || defined(__DOXYGEN__)
+#if (CAN_ENFORCE_USE_CALLBACKS == TRUE) || defined(__DOXYGEN__)
 /**
  * @brief   Type of a CAN notification callback.
  *
@@ -136,12 +198,46 @@ typedef struct {
   };
 } CANRxFrame;
 
+/* TODO: Add a filter struct also */
+
 /**
  * @brief   Driver configuration structure.
  */
 typedef struct {
-  /* End of the mandatory fields.*/
-  uint32_t                  dummy;
+  /**
+   * @brief Try to determine suitable bit timing parameters automatically
+   * 
+   * Using the values of bitrate and propdelay, the driver will attempt to
+   * pick the best length for the bit time quantum, synchronization jump
+   * width (SJW), "phase 1" and "phase 2." (Phase 2 is sometimes referred to as
+   * the "information processing time" or IPT, since it is the time after a
+   * bit is sampled but before the next bit is transmitted.)
+   * 
+   * Since the SJW is limited to 4 time quanta, the controller will be most
+   * resiliant to clock drift if the time quanta are as large as possible.
+   * The driver will try to prescale the system clock as much as possible
+   * in order to accomplish this.
+   */
+  bool                      bittime_autoguess;
+  /**
+   * @brief Bus bitrate in bits/second
+   * 
+   * @note This is only used if bittime_autoguess is true.
+   */
+  uint32_t                  bitrate;
+  /**
+   * @brief Estimated propagation delay, in nanoseconds
+   * 
+   * Internally, this is converted to bit time quanta and always rounded up.
+   * 220 might be a good starting point.
+   * @note This is only used if bittime_autoguess is true.
+   */
+  uint16_t                  prop_delay;
+  
+  uint16_t                  bit_prescaler;  /**< @brief Only used when bittime_autoguess is false.    */
+  uint8_t                   tseg1;          /**< @brief Only used when bittime_autogess is false.     */
+  uint8_t                   tseg2;          /**< @brief Only used when bittime_autoguess is false.    */
+  uint8_t                   sjw;            /**< @brief Only used when bittime_autoguess is false.    */
 } CANConfig;
 
 /**
@@ -230,6 +326,10 @@ struct CANDriver {
 #endif
 #endif
   /* End of the mandatory fields.*/
+  /**
+   * @brief   CAN module's base address.
+   */
+  uintptr_t                 can_base;
 };
 
 /*===========================================================================*/
@@ -240,8 +340,11 @@ struct CANDriver {
 /* External declarations.                                                    */
 /*===========================================================================*/
 
-#if (PLATFORM_CAN_USE_CAN1 == TRUE) && !defined(__DOXYGEN__)
+#if (TIVA_CAN_USE_CAN1 == TRUE) && !defined(__DOXYGEN__)
 extern CANDriver CAND1;
+#endif
+#if (TIVA_CAN_USE_CAN2 == TRUE) && !defined(__DOXYGEN__)
+extern CANDriver CAND2;
 #endif
 
 #ifdef __cplusplus

@@ -1,5 +1,6 @@
 /*
     ChibiOS - Copyright (C) 2006..2018 Giovanni Di Sirio
+              Copyright (C) 2020 Matthew Trescott <matthewtrescott@gmail.com>
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -37,8 +38,15 @@
 /**
  * @brief   CAN1 driver identifier.
  */
-#if (PLATFORM_CAN_USE_CAN1 == TRUE) || defined(__DOXYGEN__)
+#if (TIVA_CAN_USE_CAN1 == TRUE) || defined(__DOXYGEN__)
 CANDriver CAND1;
+#endif
+
+/**
+ * @brief   CAN1 driver identifier.
+ */
+#if (TIVA_CAN_USE_CAN2 == TRUE) || defined(__DOXYGEN__)
+CANDriver CAND2;
 #endif
 
 /*===========================================================================*/
@@ -49,9 +57,115 @@ CANDriver CAND1;
 /* Driver local functions.                                                   */
 /*===========================================================================*/
 
+void can_lld_set_bitrate(CANDriver *canp) {
+  assert(TIVA_SYSCLK % bitrate == 0);
+  
+  if (canp->config->bittime_autoguess)
+  {
+    /* The strategy is to try to maximize the ratio of SJW to Phase 2
+     * without making it larger than either Phase 1 or Phase 2. (Since
+     * that would introduce errors).
+     * 
+     * Everything is measured in time quanta (tq), which is determined
+     * by the clock prescaler.
+     * 
+     * SJW is always at least 1 tq. Phases 1 and 2 must always be greater than
+     * SJW. Sync and Propagation each require at least 1 tq. The registers limit
+     * the total bit time to 25 tq. Here, we loop through all the possible bit-lengths
+     * (as measured in tq) and see whether we can get an integer prescaler value given
+     * the system clock speed and desired bitrate. Prescaler max is 1024
+     */
+    uint16_t prescaler;
+    uint32_t tq_nanos;
+    uint8_t  prop_tq;
+    uint8_t  phase1_tq;
+    uint8_t  phase2_tq;
+    uint8_t  sjw;
+    bool     match_found = false;
+    
+    uint8_t  tmp_prescaler;
+    
+    for (uint8_t try_num_quanta = 4; try_num_quanta <= 25; ++try_num_quanta)
+    {
+      if ((TIVA_SYSCLK / bitrate) % try_num_quanta == 0 && 
+            1024 >= (tmp_prescaler = (TIVA_SYSCLK / bitrate) / try_num_quanta))
+      )
+      {
+        
+        uint8_t tmp_tq_nanos = prescaler * 1000000U / (TIVA_SYSCLK / 1000U);
+        uint8_t tmp_prop_tq = (canp->config->prop_delay + tq_nanos - 1) / tq_nanos;
+        assert(tmp_prop_tq > 0);
+        
+        uint8_t tmp_phase1_tq = (try_num_quanta - 1 /* sync */ - prop_tq + 1 /* round up */) / 2;
+        uint8_t tmp_phase2_tq = (try_num_quanta - 1 /* sync */ - prop_tq) / 2;
+        
+        if (tmp_phase2_tq > 0)
+        {
+          match_found = true;
+          uint8_t tmp_sjw = (tmp_phase2_tq > 4) ? 4 : tmp_phase2_tq;
+          if (tmp_sjw * 10000000 / tmp_phase2_tq > sjw * 10000000 / phase2_tq)
+          {
+            prescaler = tmp_prescaler;
+            tq_nanos = tmp_tq_nanos;
+            prop_tq = tmp_prop_tq;
+            phase1_tq = tmp_phase1_tq;
+            phase2_tq = tmp_phase2_tq;
+            sjw = tmp_sjw;
+          }
+        }
+      }
+    }
+    
+  }
+  else
+  {
+  }
+}
+
+
+/* Filtering */
+
+/* TX "common" ISR (not a real ISR since it takes a CANDriver as an argument) */
+
+/* RX (FIFO 1 and 2?) "common" ISR (not a real ISR since it takes a CANDriver as an argument) */
+
+/* State change (SCE) ISR (not a real ISR since it takes a CANDriver as an argument) */
+
 /*===========================================================================*/
 /* Driver interrupt handlers.                                                */
 /*===========================================================================*/
+
+#if (TIVA_CAN_USE_CAN1 == TRUE)
+/**
+ * @brief CAN1 unified interrupt handler
+ * 
+ * Unlike some STM32 chips, the Tiva chips do not have separate IRQs for
+ * different CAN events.
+ * @isr
+ */
+OSAL_IRQ_HANDLER(TIVA_CAN0_HANDLER) {
+    OSAL_IRQ_PROLOGUE();
+    
+    
+    OSAL_IRQ_EPILOGUE();
+}
+#endif /* TIVA_CAN_USE_CAN1 == TRUE */
+
+#if (TIVA_CAN_USE_CAN2 == TRUE)
+/**
+ * @brief CAN1 unified interrupt handler
+ * 
+ * Unlike some STM32 chips, the Tiva chips do not have separate IRQs for
+ * different CAN events.
+ * @isr
+ */
+OSAL_IRQ_HANDLER(TIVA_CAN1_HANDLER) {
+    OSAL_IRQ_PROLOGUE();
+    
+    
+    OSAL_IRQ_EPILOGUE();
+}
+#endif /* TIVA_CAN_USE_CAN2 == TRUE */
 
 /*===========================================================================*/
 /* Driver exported functions.                                                */
@@ -63,11 +177,19 @@ CANDriver CAND1;
  * @notapi
  */
 void can_lld_init(void) {
-
-#if PLATFORM_CAN_USE_CAN1 == TRUE
+#if TIVA_CAN_USE_CAN1 == TRUE
   /* Driver initialization.*/
   canObjectInit(&CAND1);
+  CAND1.can_base = CAN0_BASE;
+  nvicEnableVector(TIVA_CAN0_NUMBER, TIVA_CAN1_IRQ_PRIORITY);
 #endif
+#if TIVA_CAN_USE_CAN2 == TRUE
+  canObjectInit(&CAND2);
+  CAND2.can_base = CAN1_BASE;
+  nvicEnableVector(TIVA_CAN1_NUMBER, TIVA_CAN2_IRQ_PRIORITY);
+#endif
+  
+  /* TODO: Set a sane default filtering here */
 }
 
 /**
@@ -78,15 +200,21 @@ void can_lld_init(void) {
  * @notapi
  */
 void can_lld_start(CANDriver *canp) {
-
-  if (canp->state == CAN_STOP) {
-    /* Enables the peripheral.*/
-#if PLATFORM_CAN_USE_CAN1 == TRUE
-    if (&CAND1 == canp) {
-
-    }
-#endif
+  /* Active clocks and wait for modules to become ready.*/
+#if TIVA_CAN_USE_CAN1 == TRUE
+  if (&CAND1 == canp) {
+    HWREG(SYSCTL_RCGCCAN) |= SYSCTL_RCGCCAN_R0;
+    while ( !(HWREG(SYSCTL_PRCAN) & SYSCTL_PRCAN_R0))
+      ;
   }
+#endif
+#if TIVA_CAN_USE_CAN2 == TRUE
+  if (&CAND2 == canp) {
+    HWREG(SYSCTL_RCGCCAN) |= SYSCTL_RCGCCAN_R1;
+    while ( !(HWREG(SYSCTL_PRCAN) & SYSCTL_PRCAN_R1))
+      ;
+  }
+#endif
   /* Configures the peripheral.*/
 
 }
@@ -104,7 +232,7 @@ void can_lld_stop(CANDriver *canp) {
     /* Resets the peripheral.*/
 
     /* Disables the peripheral.*/
-#if PLATFORM_CAN_USE_CAN1 == TRUE
+#if TIVA_CAN_USE_CAN1 == TRUE
     if (&CAND1 == canp) {
 
     }
