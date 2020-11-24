@@ -211,46 +211,45 @@ typedef struct {
    */
   uint32_t                  bitrate;
   /**
-   * @brief Maximum oscillator tolerance between this node and another
+   * @brief   Maximum oscillator tolerance between this node and another.
    * 
-   * Expressed in parts per million (ppm), for accuracy. There are
-   * often many combinations of parameters that produce a bitrate suitably
-   * close to the nominal bitrate. This parameter gives the auto-guessing
-   * algorithm a way to check whether the synchronization jump width is enough
-   * to prevent bit errors.
+   * @details Expressed in parts per million (ppm), for accuracy. There are
+   *          often many combinations of parameters that produce a bitrate
+   *          suitably close to the nominal bitrate. This parameter gives the
+   *          auto-guessing algorithm a way to check whether the
+   *          synchronization jump width is long enough to prevent bit errors.
    * 
-   * For example, if this chip's oscillator and another chip's oscillator both
-   * have 1.25% tolerance, you would set this to 2×1.25% = 2.5% = 25000 ppm.
-   * If this oscillator has 3% tolerance and another chip's has 1%, you would set
-   * this to 3% + 1% = 4% = 40000 ppm.
-   * @note This is only used if bittime_autogess is true
+   * @details For example, if this chip's oscillator and another chip's
+   *          oscillator both have 1.25% tolerance, you would set this to
+   *          2×1.25% = 2.5% = 25000 ppm. If this oscillator has 3% tolerance
+   *          and another chip's has 1%, you would set this to
+   *          3% + 1% = 4% = 40000 ppm.
+   * @note This is only used if bittime_autoguess is true
+   * @note see @p can_lld_calc_bitrate for details on the algorithm.
    */
   uint32_t                  osc_tol;
   /**
-   * @brief Estimated propagation delay, in nanoseconds
+   * @brief   Estimated propagation delay, in nanoseconds
    * 
-   * Internally, this is converted to bit time quanta and always rounded up.
-   * 220 might be a good starting point.
+   * @details Internally, this is converted to bit time quanta and always
+   *          rounded up. 220 might be a good starting point.
    * @note This is only used if bittime_autoguess is true.
    */
   uint16_t                  prop_delay;
   uint16_t                  prescaler;      /**< @brief Only used when bittime_autoguess is false.    */
-  uint8_t                   tseg1;          /**< @brief Only used when bittime_autogess is false.     */
+  uint8_t                   tseg1;          /**< @brief Only used when bittime_autoguess is false.     */
   uint8_t                   tseg2;          /**< @brief Only used when bittime_autoguess is false.    */
   uint8_t                   sjw;            /**< @brief Only used when bittime_autoguess is false.    */
   /**
-   * @brief Try to determine suitable bit timing parameters automatically
+   * @brief   Try to determine suitable bit timing parameters automatically
    * 
-   * Using the values of bitrate and propdelay, the driver will attempt to
-   * pick the best length for the bit time quantum, synchronization jump
-   * width (SJW), "phase 1" and "phase 2." (Phase 2 is sometimes referred to as
-   * the "information processing time" or IPT, since it is the time after a
-   * bit is sampled but before the next bit is transmitted.)
-   * 
-   * Since the SJW is limited to 4 time quanta, the controller will be most
-   * resiliant to clock drift if the time quanta are as large as possible.
-   * The driver will try to prescale the system clock as much as possible
-   * in order to accomplish this.
+   * @details Using the values of @p bitrate, @p prop_delay, and @p osc_tol the
+   *          driver will attempt to pick the best length for the bit time
+   *          quantum, synchronization jump width (SJW), "phase 1" and
+   *          "phase 2." See @p hal_lld_calc_bitrate for details. If
+   *          @p bittime_autoguess is not set you will need to manuall set the
+   *          bit timing in @p prescaler, @p tseg1, @p tseg2, and @p sjw before
+   *          calling @p CANStart.
    */
   bool                      bittime_autoguess;
 } CANConfig;

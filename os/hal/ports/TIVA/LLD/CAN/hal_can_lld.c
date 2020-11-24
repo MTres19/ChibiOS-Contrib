@@ -59,29 +59,52 @@ CANDriver CAND2;
 
 /**
  * @brief   Set the bitrate for the driver
- * @param[in] confp  Pointer to the CANConfig set with the desired bitrate and prop delay
+ * @details The Tiva CAN modules have four parameters for configuring bitrate.
+ *          (See @p CANConfig for details.) The clock prescaler divides the
+ *          system clock into periods referred to as time quanta (tq). Each
+ *          bit-time takes several time quanta. The CAN module expects the bus
+ *          to transition between dominant and recessive (if it is going to do
+ *          so) during the first time quantum of the bit. This is the
+ *          synchronization time quantum. Then, a few time quanta are allocated
+ *          for signal propagation, followed by "phase 1" and "phase 2" (the
+ *          bus is sampled between phases 1 and 2). Due to clock drift, the
+ *          module sometimes needs to adjust when it samples the bus based on
+ *          the actual transition point of the signal. It does this by
+ *          lengthening phase 1 (when the signal edge occurs after the sync
+ *          t.q.) or shortening phase 2 (when the signal edge occurs before the
+ *          sync t.q., during the previous bit's phase 2). It ajusts it by a
+ *          number of time quanta up to the limit set by the Synchronization
+ *          Jump Width (SJW). The SJW cannot be longer than phase 2 because if
+ *          it were, then during a jump the CAN module would have to "change
+ *          its mind" on the value of a bit after it had already been sampled.
  * 
- * The Tiva CAN modules have four parameters for configuring bitrate. (See
- * @p CANConfig for details.) The clock prescaler divides the system clock
- * into periods referred to as time quanta (tq). Each bit-time takes several
- * time quanta. The CAN module expects the bus to transition between dominant
- * and recessive (if it is going to do so) during the first time quantum of the
- * bit. This is the synchronization time quantum. Then, a few time quanta are
- * allocated for signal propagation, followed by "phase 1" and "phase 2" (the bus
- * is sampled between phases 1 and 2). Due to clock drift, the module sometimes needs
- * to adjust when it samples the bus based on the actual transition point of the
- * signal. It does this by lengthening phase 1 (when the signal edge occurs after
- * the sync t.q.) or shortening phase 2 (when the signal edge occurs before the sync
- * t.q., during the previous bit's phase 2). It ajusts it by a number of time quanta
- * up to the limit set by the Synchronization Jump Width (SJW). The SJW cannot
- * be greater than phase 2 because if it were, then during a jump the CAN module
- * would have to "change its mind" on the value of a bit after it had already been
- * sampled.
+ * @details The SJW also has to be long enough to compensate for oscillator
+ *          tolerances and slight mismatches between the desired bitrate and
+ *          the clock speed (for example, it is impossible to get a perfect
+ *          33 kbps bus unless your system clock frequency is a multiple of
+ *          33,000 × (tq per bit). The best timing configuration, then,
+ *          maximizes the amount of SJW time that's _not_ dedicated to
+ *          correcting clock errors. If this value is the same between two
+ *          different clock configurations, then it means that the two
+ *          configurations are equally good (or bad) frequency matches for the
+ *          desired bitrate. If they are equally good matches, then the one
+ *          with the longer total SJW "wins." If the two total SJWs are the
+ *          same, then the one with the higher SJW resolution
+ *          (i.e. smaller-sized tq) wins.
  * 
- * The best timing parameters then, make the SJW as large as possible without exceeding
- * phase 1 or phase 2.
+ * @param[in,out] confp Pointer to @p CANConfig set with the desired bitrate,
+ *                      propagation delay, and oscillator tolerances.
+ *                      If suitable configuration(s) are found, the best match
+ *                      will be stored in @p CANConfig.prescaler,
+ *                      @p CANConfig.tseg1, @p CANConfig.tseg2, and
+ *                      @p CANConfig.sjw. Set one of these fields to an invalid
+ *                      value, like 255, verify whether a configuration was
+ *                      found.
+ * 
+ * @init
  */
-void can_lld_calc_bitrate(CANConfig *confp) {
+void can_lld_calc_bitrate(CANConfig *confp)
+{
   assert(confp->bitrate >= 1000);
   assert(confp->prop_delay > 0);
   assert(confp->osc_tol > 0);
@@ -89,80 +112,139 @@ void can_lld_calc_bitrate(CANConfig *confp) {
   if (!confp->bittime_autoguess)
       return;
   
-  uint16_t prescaler;  /* 1 to 1024 */
-  uint32_t tq_nanos;   /* nanoseconds, theoretical range 1 (25 tq/bit @ 1Mbps) to 250000 (4 tq/bit @ 1kbps) */
-  uint16_t prop_tq;    /* propagation delay measured in time quanta */
+  /* 1 to 1024 */
+  uint16_t prescaler;
+  
+  /* nanoseconds per time quantum, theoretical range 1 (25 tq/bit @ 1Mbps) to
+   * 250000 (4 tq/bit @ 1kbps) */
+  uint32_t tq_nanos;
+  
+  /* propagation delay, phase1, phase2, and sjw measured in time quanta */
+  uint8_t prop_tq;
   uint8_t  phase1_tq;
   uint8_t  phase2_tq;
-  uint8_t  sjw;        /* Synchronization Jump Width */
-  uint8_t  needed_sjw; /* SJW required to compensate for tolerances */
-  bool     match_found = false;
+  uint8_t  sjw_tq;
   
-  /* Converting from frequency tolerance in ppm to nanoseconds-per-bit tolerance.
-   * T = T0 / (1 + Error_frequency) where T0 is the nominal period (1/bitrate) and
-   * Error_frequency is the frequency tolerance expressed as a fraction. So the
-   * error is T0 - T. Here, we've shuffled the scaling around to avoid roundoff errors.
+  /* Nanoseconds of timing error per bit when the system clock isn't an integer
+   * multiple of bitrate × (tq per bit)
    */
-  uint32_t tolerance_nanos = 1000000000U / (uint64_t)(confp->bitrate) - (1000000000000000U / (uint64_t)(confp->bitrate)) / (1000000U + (uint64_t)(confp->osc_tol));
+  uint32_t  mismatch_nanos;
+  
+  /* Nanoseconds of timing error per bit due to worst-case crystal tolerances.
+   * 
+   * We convert from frequency tolerance in ppm to nanoseconds-per-bit.
+   * T = T0 / (1 + Error_frequency) where T0 is the nominal period (1/bitrate)
+   * and Error_frequency is the frequency tolerance expressed as a fraction.
+   * So the error is T0 - T. Here, we've shuffled the scaling around to avoid
+   * roundoff errors.
+   */
+  uint32_t tolerance_nanos = 1000000000U / (uint64_t)(confp->bitrate)
+                             - (1000000000000000U / (uint64_t)(confp->bitrate))
+                                / (1000000U + (uint64_t)(confp->osc_tol));
+
+  /* Nanoseconds of the SJW left over after subtracting the nanoseconds dedicated
+   * to compensating for tolerance and frequency mismatches
+   */
+  uint32_t extra_sjw_nanos;
+  
+  bool     match_found = false;
   
   /* SJW is always at least 1 tq. Phases 1 and 2 must always be greater than
    * SJW. Sync and Propagation each require at least 1 tq. The registers limit
-   * the total bit time to 25 tq. Here, we loop through all the possible bit-lengths
-   * (as measured in tq) and see whether we can get an integer prescaler value given
-   * the system clock speed and desired bitrate. Prescaler max is 1024.
+   * the total bit time to 25 tq. Here, we loop through all the possible
+   * bit-lengths (as measured in tq) and see whether we can get a prescaler
+   * value that works given the system clock speed and desired bitrate.
+   * Prescaler max is 1024.
    */
-  for (uint8_t try_num_quanta = 4; try_num_quanta <= 25; ++try_num_quanta)
-  {
-    /* Choose a prescaler that best approximates the target bitrate in case it doesn't divide evenly */
-    uint32_t tmp_prescaler = (TIVA_SYSCLK / (uint32_t)(confp->bitrate)) / (uint32_t)try_num_quanta;
-    
-    for(uint8_t i = 0; i <= 1; ++i)
-    {
+  for (uint8_t try_num_quanta = 4; try_num_quanta <= 25; ++try_num_quanta) {
+    /* Choose a prescaler that best approximates the target bitrate in case it
+     * doesn't divide evenly. This tries rounding up and down.
+     */
+    uint32_t tmp_prescaler = (TIVA_SYSCLK / (uint32_t)(confp->bitrate))
+                             / (uint32_t)try_num_quanta;
+    for(uint8_t i = 0; i <= 1; ++i) {
       tmp_prescaler = tmp_prescaler + i;
     
       if (tmp_prescaler > 1024)
         continue;
       
-      uint32_t tmp_tq_nanos = (uint32_t)tmp_prescaler * 1000000U / (TIVA_SYSCLK / 1000U);
+      /* Temp variables used for comparison in loop. See corresponding
+       * declarations above for descriptions
+       */
+      uint32_t tmp_tq_nanos         = (uint32_t)tmp_prescaler * 1000000U
+                                        / (TIVA_SYSCLK / 1000U);
+      uint32_t tmp_mismatch_nanos   = abs((int64_t)tmp_tq_nanos *
+                                                (int64_t)try_num_quanta
+                                            - (1000000000
+                                                / (int32_t)(confp->bitrate)));
+      uint16_t tmp_prop_tq          = (confp->prop_delay
+                                            + tmp_tq_nanos - 1 /* round up */)
+                                        / tmp_tq_nanos;
+      int16_t  tmp_phase1_tq        = ((int32_t)try_num_quanta
+                                            - 1 /* sync tq */
+                                            - tmp_prop_tq
+                                            + 1 /* round up */)
+                                        / 2;
+      int16_t  tmp_phase2_tq        = ((int32_t)try_num_quanta
+                                            - 1 /* sync tq */
+                                            - tmp_prop_tq
+                                            /* no round-up*/)
+                                        / 2;
       
-      /* Nanoseconds per bit of timing error due to imperfect prescaler selection */
-      uint32_t mismatch_nanos = abs((int64_t)tmp_tq_nanos * (int64_t)try_num_quanta - (1000000000 / (int32_t)(confp->bitrate)));
+      /* Minimum number of tq needed to compensate for frequency mismatch and
+       * oscillator tolerances. Using accumulated error over 10 bit-times, due
+       * to bit-stuffing and the the fact that only dominant-to-recessive
+       * transitions are used for synchronization. Always rounded up.
+       */
+      uint32_t tmp_min_sjw_tq = (((int64_t)tmp_mismatch_nanos + (int64_t)tolerance_nanos)
+                                    * 10
+                                + (int64_t)tmp_tq_nanos - 1 /* round up */)
+                                / (int64_t)tmp_tq_nanos;
       
-      uint32_t tmp_needed_sjw = (((int64_t)mismatch_nanos + (int64_t)tolerance_nanos) * 10 + (int64_t)tmp_tq_nanos - 1 /* round up */) / (int64_t)tmp_tq_nanos;
-      
-      uint16_t tmp_prop_tq = (confp->prop_delay + tmp_tq_nanos - 1 /* round up */) / tmp_tq_nanos;
-      int16_t tmp_phase1_tq = ((int32_t)try_num_quanta - 1 /* sync tq */ - tmp_prop_tq + 1 /* round up */) / 2;
-      int16_t tmp_phase2_tq = ((int32_t)try_num_quanta - 1 /* sync tq */ - tmp_prop_tq) / 2;
-      
-      if (tmp_phase2_tq > 0
-          && tmp_phase2_tq <= 4
-          && tmp_prop_tq + tmp_phase1_tq < 16 /* TSEG1 limited to 16 tq */
-          && tmp_needed_sjw <= 4
-          && tmp_needed_sjw <= tmp_phase2_tq)
+      if (tmp_phase2_tq > 0                     /* TSEG2 must be >= 1      */
+          && tmp_phase2_tq <= 4                 /* TSEG2 limited to 4 tq   */
+          && tmp_prop_tq + tmp_phase1_tq < 16   /* TSEG1 limited to 16 tq  */
+          && tmp_min_sjw_tq <= 4                /* SJW cannot be > 4       */
+          && tmp_min_sjw_tq <= tmp_phase2_tq)   /* SJW cannot be > phase 2 */
       {
-        match_found = true;
-        uint8_t tmp_sjw = (tmp_phase2_tq > 4) ? 4 : tmp_phase2_tq;
-        
-        if ((tmp_sjw - tmp_needed_sjw + 1) * tmp_tq_nanos > (sjw - needed_sjw + 1) * tq_nanos) /* +1 to break the tie when sjw = needed_sjw TODO is this OK? */
-        {
-          prescaler = tmp_prescaler;
-          tq_nanos = tmp_tq_nanos;
-          prop_tq = tmp_prop_tq;
-          phase1_tq = tmp_phase1_tq;
-          phase2_tq = tmp_phase2_tq;
-          sjw = tmp_sjw;
-          needed_sjw = tmp_needed_sjw;
+        uint8_t tmp_sjw_tq = (tmp_phase2_tq > 4) ? 4 : tmp_phase2_tq;
+        uint32_t tmp_extra_sjw_nanos = (int64_t)tmp_sjw_tq * tmp_tq_nanos
+                                        - 10 * ((int64_t)tmp_mismatch_nanos
+                                                  + (int64_t)tolerance_nanos);
+        if (!match_found
+            /* better because more time available for unexpected corrections */
+            || tmp_extra_sjw_nanos > extra_sjw_nanos
+            /* better because the frequencies are equally well matched, but
+             * more time is available for corrections, total
+             */
+            || (tmp_extra_sjw_nanos == extra_sjw_nanos
+                  && tmp_sjw_tq * tmp_tq_nanos > sjw_tq * tq_nanos)
+            /* better because corrections are smaller increments and can happen
+             * more frequently
+             */
+            || (tmp_extra_sjw_nanos == extra_sjw_nanos
+                  && tmp_sjw_tq * tmp_tq_nanos == sjw_tq *tq_nanos
+                  && tmp_tq_nanos < tq_nanos)) {
+          match_found = true;
+          
+          prescaler       = tmp_prescaler;
+          tq_nanos        = tmp_tq_nanos;
+          prop_tq         = tmp_prop_tq;
+          phase1_tq       = tmp_phase1_tq;
+          phase2_tq       = tmp_phase2_tq;
+          sjw_tq          = tmp_sjw_tq;
+          mismatch_nanos  = tmp_mismatch_nanos;
+          extra_sjw_nanos = tmp_extra_sjw_nanos;
         }
       }
     }
   }
   
-  if (match_found)
-  {
+  if (match_found)  {
     confp->prescaler = prescaler;
     confp->tseg1 = prop_tq + phase1_tq;
     confp->tseg2 = phase2_tq;
-    confp->sjw = sjw;
+    confp->sjw = sjw_tq;
   }
 }
 
