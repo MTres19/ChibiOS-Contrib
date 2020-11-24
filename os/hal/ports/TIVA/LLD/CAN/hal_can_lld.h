@@ -205,6 +205,40 @@ typedef struct {
  */
 typedef struct {
   /**
+   * @brief Bus bitrate in bits/second
+   * 
+   * @note This is only used if bittime_autoguess is true.
+   */
+  uint32_t                  bitrate;
+  /**
+   * @brief Maximum oscillator tolerance between this node and another
+   * 
+   * Expressed in parts per million (ppm), for accuracy. There are
+   * often many combinations of parameters that produce a bitrate suitably
+   * close to the nominal bitrate. This parameter gives the auto-guessing
+   * algorithm a way to check whether the synchronization jump width is enough
+   * to prevent bit errors.
+   * 
+   * For example, if this chip's oscillator and another chip's oscillator both
+   * have 1.25% tolerance, you would set this to 2×1.25% = 2.5% = 25000 ppm.
+   * If this oscillator has 3% tolerance and another chip's has 1%, you would set
+   * this to 3% + 1% = 4% = 40000 ppm.
+   * @note This is only used if bittime_autogess is true
+   */
+  uint32_t                  osc_tol;
+  /**
+   * @brief Estimated propagation delay, in nanoseconds
+   * 
+   * Internally, this is converted to bit time quanta and always rounded up.
+   * 220 might be a good starting point.
+   * @note This is only used if bittime_autoguess is true.
+   */
+  uint16_t                  prop_delay;
+  uint16_t                  prescaler;      /**< @brief Only used when bittime_autoguess is false.    */
+  uint8_t                   tseg1;          /**< @brief Only used when bittime_autogess is false.     */
+  uint8_t                   tseg2;          /**< @brief Only used when bittime_autoguess is false.    */
+  uint8_t                   sjw;            /**< @brief Only used when bittime_autoguess is false.    */
+  /**
    * @brief Try to determine suitable bit timing parameters automatically
    * 
    * Using the values of bitrate and propdelay, the driver will attempt to
@@ -219,25 +253,6 @@ typedef struct {
    * in order to accomplish this.
    */
   bool                      bittime_autoguess;
-  /**
-   * @brief Bus bitrate in bits/second
-   * 
-   * @note This is only used if bittime_autoguess is true.
-   */
-  uint32_t                  bitrate;
-  /**
-   * @brief Estimated propagation delay, in nanoseconds
-   * 
-   * Internally, this is converted to bit time quanta and always rounded up.
-   * 220 might be a good starting point.
-   * @note This is only used if bittime_autoguess is true.
-   */
-  uint16_t                  prop_delay;
-  
-  uint16_t                  bit_prescaler;  /**< @brief Only used when bittime_autoguess is false.    */
-  uint8_t                   tseg1;          /**< @brief Only used when bittime_autogess is false.     */
-  uint8_t                   tseg2;          /**< @brief Only used when bittime_autoguess is false.    */
-  uint8_t                   sjw;            /**< @brief Only used when bittime_autoguess is false.    */
 } CANConfig;
 
 /**
